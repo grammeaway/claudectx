@@ -17,6 +17,15 @@ $ claudectx personal
   Restart Claude Code for changes to take effect.
 ```
 
+## Table of Contents
+- [Why?](#why)
+- [Installation](#installation)
+- [Usage](#usage)
+- [How it works](#how-it-works)
+- [Tips](#tips)
+- [Security](#security)
+- [AI usage disclaimer](#ai-usage-disclaimer)
+
 ## Why?
 
 Claude Code stores your identity, OAuth session, MCP servers, and settings in two files:
@@ -133,3 +142,6 @@ chmod 700 ~/.claudectx
 ```
 
 Never commit your `~/.claudectx/` directory to version control.
+
+## AI usage disclaimer
+This tool was built using Claude Code, and may contain inaccuracies or bugs. Use with caution and verify critical actions manually. Feedback and contributions are welcome to improve the tool!
