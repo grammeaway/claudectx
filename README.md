@@ -39,10 +39,18 @@ If you use Claude Code with a work account **and** a personal account (or multip
 
 ## Installation
 
-### From source (requires Rust / cargo)
+### Install from source (requires Rust / cargo)
+Pressuming you have Rust installed, and the repository cloned:
 
 ```bash
-git clone <this-repo>
+cd claudectx
+cargo install --path .
+```
+
+### Build from source (requires Rust / cargo)
+Pressuming you have Rust installed, and the repository cloned:
+
+```bash
 cd claudectx
 cargo build --release
 # copy binary somewhere on your PATH
