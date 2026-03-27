@@ -37,6 +37,16 @@ fn cli_version() {
 }
 
 #[test]
+fn cli_version_subcommand() {
+    let home = setup_home();
+    claudectx(&home)
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claudectx"));
+}
+
+#[test]
 fn cli_list_empty() {
     let home = setup_home();
     claudectx(&home)

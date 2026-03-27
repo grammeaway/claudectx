@@ -76,6 +76,9 @@ enum Cmd {
         /// Destination context name
         dest: String,
     },
+
+    /// Print the version
+    Version,
 }
 
 // ── Config store ─────────────────────────────────────────────────────────────
@@ -478,6 +481,10 @@ fn main() {
         (Some(Cmd::Rename { old_name, new_name }), _) => cmd_rename(&store, &old_name, &new_name),
         (Some(Cmd::Inspect { name }), _) => cmd_inspect(&store, &name),
         (Some(Cmd::Copy { source, dest }), _) => cmd_copy(&store, &source, &dest),
+        (Some(Cmd::Version), _) => {
+            println!("claudectx {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
     };
 
     if let Err(e) = result {

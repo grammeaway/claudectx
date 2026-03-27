@@ -87,6 +87,7 @@ claudectx personal    # switch to the "personal" context
 | `claudectx rename <old> <new>` | | Rename a context |
 | `claudectx copy <src> <dst>` | | Duplicate a context |
 | `claudectx inspect <name>` | | Show files + top-level JSON keys stored in a context |
+| `claudectx version` | | Print the version (also available as `--version`) |
 
 ### Typical workflow
 
