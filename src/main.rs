@@ -1,8 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use dirs::home_dir;
-use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -93,21 +92,32 @@ enum Cmd {
 
 struct Store {
     root: PathBuf,
+    home: PathBuf,
 }
 
 impl Store {
     fn new() -> Result<Self> {
         let home = home_dir().context("Cannot determine home directory")?;
-        let root = home.join(".claudectx");
-        fs::create_dir_all(root.join("contexts"))
-            .context("Cannot create ~/.claudectx/contexts/")?;
+        Self::with_paths(home.join(".claudectx"), home)
+    }
+
+    fn with_paths(root: PathBuf, home: PathBuf) -> Result<Self> {
+        fs::create_dir_all(root.join("contexts")).context("Cannot create contexts directory")?;
         #[cfg(unix)]
         {
             // Store contains copies of claude.json which holds OAuth tokens
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-                .context("Cannot set permissions on ~/.claudectx/")?;
+                .context("Cannot set permissions on store root")?;
         }
-        Ok(Self { root })
+        Ok(Self { root, home })
+    }
+
+    fn claude_json_path(&self) -> PathBuf {
+        self.home.join(".claude.json")
+    }
+
+    fn settings_json_path(&self) -> PathBuf {
+        self.home.join(".claude").join("settings.json")
     }
 
     fn ctx_dir(&self, name: &str) -> PathBuf {
@@ -146,18 +156,6 @@ impl Store {
     }
 }
 
-// ── Claude Code file paths ───────────────────────────────────────────────────
-
-fn claude_json_path() -> Result<PathBuf> {
-    let home = home_dir().context("Cannot determine home directory")?;
-    Ok(home.join(".claude.json"))
-}
-
-fn settings_json_path() -> Result<PathBuf> {
-    let home = home_dir().context("Cannot determine home directory")?;
-    Ok(home.join(".claude").join("settings.json"))
-}
-
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 fn cmd_list(store: &Store) -> Result<()> {
@@ -188,8 +186,8 @@ fn cmd_save(store: &Store, name: &str) -> Result<()> {
     let ctx_dir = store.ctx_dir(name);
     fs::create_dir_all(&ctx_dir).context("Cannot create context directory")?;
 
-    let claude_json = claude_json_path()?;
-    let settings_json = settings_json_path()?;
+    let claude_json = store.claude_json_path();
+    let settings_json = store.settings_json_path();
 
     let mut saved = Vec::new();
 
@@ -235,8 +233,8 @@ fn cmd_use(store: &Store, name: &str) -> Result<()> {
     }
 
     let ctx_dir = store.ctx_dir(name);
-    let claude_json_dest = claude_json_path()?;
-    let settings_json_dest = settings_json_path()?;
+    let claude_json_dest = store.claude_json_path();
+    let settings_json_dest = store.settings_json_path();
 
     let saved_claude = ctx_dir.join("claude.json");
     let saved_settings = ctx_dir.join("settings.json");
@@ -298,7 +296,11 @@ fn cmd_delete(store: &Store, name: &str) -> Result<()> {
     if store.get_current().as_deref() == Some(name) {
         let _ = fs::remove_file(store.current_file());
     }
-    println!("{} Deleted context {}", "✓".green().bold(), name.cyan().bold());
+    println!(
+        "{} Deleted context {}",
+        "✓".green().bold(),
+        name.cyan().bold()
+    );
     Ok(())
 }
 
@@ -365,21 +367,20 @@ fn cmd_inspect(store: &Store, name: &str) -> Result<()> {
                 display_name.bold(),
                 format_size(meta.len())
             );
-            if let Ok(text) = fs::read_to_string(&path) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(obj) = val.as_object() {
-                        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).take(8).collect();
-                        let suffix = if obj.len() > 8 {
-                            format!(" +{} more", obj.len() - 8)
-                        } else {
-                            String::new()
-                        };
-                        println!(
-                            "    {}",
-                            format!("keys: {}{}", keys.join(", "), suffix).dimmed()
-                        );
-                    }
-                }
+            if let Ok(text) = fs::read_to_string(&path)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(obj) = val.as_object()
+            {
+                let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).take(8).collect();
+                let suffix = if obj.len() > 8 {
+                    format!(" +{} more", obj.len() - 8)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "    {}",
+                    format!("keys: {}{}", keys.join(", "), suffix).dimmed()
+                );
             }
         }
     }
@@ -482,5 +483,334 @@ fn main() {
     if let Err(e) = result {
         eprintln!("{} {}", "error:".red().bold(), e);
         std::process::exit(1);
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a Store backed by a temp directory.
+    fn test_store() -> (TempDir, Store) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join(".claudectx");
+        let home = tmp.path().to_path_buf();
+        let store = Store::with_paths(root, home).unwrap();
+        (tmp, store)
+    }
+
+    /// Write fake Claude config files into the test home directory.
+    fn write_fake_configs(store: &Store) {
+        let claude_json = store.claude_json_path();
+        fs::write(&claude_json, r#"{"oauthToken":"fake"}"#).unwrap();
+
+        let settings_dir = store.settings_json_path().parent().unwrap().to_path_buf();
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(
+            store.settings_json_path(),
+            r#"{"model":"opus","permissions":[]}"#,
+        )
+        .unwrap();
+    }
+
+    // ── Pure function tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_name_valid() {
+        assert!(validate_name("work").is_ok());
+        assert!(validate_name("my-context").is_ok());
+        assert!(validate_name("ctx_123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_name_empty() {
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn test_validate_name_slash() {
+        assert!(validate_name("a/b").is_err());
+    }
+
+    #[test]
+    fn test_validate_name_backslash() {
+        assert!(validate_name("a\\b").is_err());
+    }
+
+    #[test]
+    fn test_validate_name_dot() {
+        assert!(validate_name("a.b").is_err());
+    }
+
+    #[test]
+    fn test_validate_name_whitespace() {
+        assert!(validate_name("a b").is_err());
+        assert!(validate_name("a\tb").is_err());
+    }
+
+    #[test]
+    fn test_format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(500), "500 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(2048), "2.0 KB");
+    }
+
+    // ── Store method tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_store_with_paths_creates_dirs() {
+        let (_tmp, store) = test_store();
+        assert!(store.root.join("contexts").is_dir());
+    }
+
+    #[test]
+    fn test_store_list_empty() {
+        let (_tmp, store) = test_store();
+        assert_eq!(store.list().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_store_list_sorted() {
+        let (_tmp, store) = test_store();
+        for name in ["charlie", "alpha", "bravo"] {
+            fs::create_dir(store.ctx_dir(name)).unwrap();
+        }
+        assert_eq!(store.list().unwrap(), vec!["alpha", "bravo", "charlie"]);
+    }
+
+    #[test]
+    fn test_store_exists() {
+        let (_tmp, store) = test_store();
+        assert!(!store.exists("work"));
+        fs::create_dir(store.ctx_dir("work")).unwrap();
+        assert!(store.exists("work"));
+    }
+
+    #[test]
+    fn test_store_current_none() {
+        let (_tmp, store) = test_store();
+        assert_eq!(store.get_current(), None);
+    }
+
+    #[test]
+    fn test_store_set_and_get_current() {
+        let (_tmp, store) = test_store();
+        store.set_current("work").unwrap();
+        assert_eq!(store.get_current(), Some("work".to_string()));
+    }
+
+    #[test]
+    fn test_store_ctx_dir() {
+        let (_tmp, store) = test_store();
+        assert_eq!(
+            store.ctx_dir("work"),
+            store.root.join("contexts").join("work")
+        );
+    }
+
+    // ── Command integration tests ────────────────────────────────────────
+
+    #[test]
+    fn test_cmd_save_and_use_roundtrip() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+
+        cmd_save(&store, "work").unwrap();
+        assert!(store.exists("work"));
+        assert_eq!(store.get_current(), Some("work".to_string()));
+
+        // Verify saved files exist
+        let ctx = store.ctx_dir("work");
+        assert!(ctx.join("claude.json").exists());
+        assert!(ctx.join("settings.json").exists());
+
+        // Modify the live config, then restore
+        fs::write(store.claude_json_path(), r#"{"modified":true}"#).unwrap();
+        cmd_use(&store, "work").unwrap();
+
+        // Verify restored content matches original
+        let restored = fs::read_to_string(store.claude_json_path()).unwrap();
+        assert_eq!(restored, r#"{"oauthToken":"fake"}"#);
+    }
+
+    #[test]
+    fn test_cmd_save_creates_backup_on_use() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+
+        cmd_save(&store, "work").unwrap();
+
+        // Use the context — should create .bak files
+        cmd_use(&store, "work").unwrap();
+        assert!(store.claude_json_path().with_extension("json.bak").exists());
+    }
+
+    #[test]
+    fn test_cmd_save_no_config_files() {
+        let (_tmp, store) = test_store();
+        // No config files written — should fail
+        let result = cmd_save(&store, "empty");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No Claude Code config files found")
+        );
+    }
+
+    #[test]
+    fn test_cmd_save_partial_config() {
+        let (_tmp, store) = test_store();
+        // Only claude.json, no settings.json
+        fs::write(store.claude_json_path(), r#"{"token":"x"}"#).unwrap();
+
+        cmd_save(&store, "partial").unwrap();
+        assert!(store.ctx_dir("partial").join("claude.json").exists());
+        assert!(!store.ctx_dir("partial").join("settings.json").exists());
+    }
+
+    #[test]
+    fn test_cmd_use_nonexistent() {
+        let (_tmp, store) = test_store();
+        let result = cmd_use(&store, "nope");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_cmd_delete() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "work").unwrap();
+
+        cmd_delete(&store, "work").unwrap();
+        assert!(!store.exists("work"));
+    }
+
+    #[test]
+    fn test_cmd_delete_clears_current() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "work").unwrap();
+        assert_eq!(store.get_current(), Some("work".to_string()));
+
+        cmd_delete(&store, "work").unwrap();
+        assert_eq!(store.get_current(), None);
+    }
+
+    #[test]
+    fn test_cmd_delete_nonexistent() {
+        let (_tmp, store) = test_store();
+        assert!(cmd_delete(&store, "nope").is_err());
+    }
+
+    #[test]
+    fn test_cmd_rename() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "old").unwrap();
+
+        cmd_rename(&store, "old", "new").unwrap();
+        assert!(!store.exists("old"));
+        assert!(store.exists("new"));
+        assert_eq!(store.get_current(), Some("new".to_string()));
+    }
+
+    #[test]
+    fn test_cmd_rename_target_exists() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "a").unwrap();
+        cmd_save(&store, "b").unwrap();
+
+        let result = cmd_rename(&store, "a", "b");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_cmd_copy() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "src").unwrap();
+
+        cmd_copy(&store, "src", "dst").unwrap();
+        assert!(store.exists("src"));
+        assert!(store.exists("dst"));
+
+        // Verify file contents match
+        let src_content = fs::read_to_string(store.ctx_dir("src").join("claude.json")).unwrap();
+        let dst_content = fs::read_to_string(store.ctx_dir("dst").join("claude.json")).unwrap();
+        assert_eq!(src_content, dst_content);
+    }
+
+    #[test]
+    fn test_cmd_copy_target_exists() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "a").unwrap();
+        cmd_save(&store, "b").unwrap();
+
+        let result = cmd_copy(&store, "a", "b");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_cmd_list_empty_ok() {
+        let (_tmp, store) = test_store();
+        assert!(cmd_list(&store).is_ok());
+    }
+
+    #[test]
+    fn test_cmd_current_none_ok() {
+        let (_tmp, store) = test_store();
+        assert!(cmd_current(&store).is_ok());
+    }
+
+    #[test]
+    fn test_cmd_inspect() {
+        let (_tmp, store) = test_store();
+        write_fake_configs(&store);
+        cmd_save(&store, "work").unwrap();
+
+        assert!(cmd_inspect(&store, "work").is_ok());
+    }
+
+    #[test]
+    fn test_cmd_inspect_nonexistent() {
+        let (_tmp, store) = test_store();
+        assert!(cmd_inspect(&store, "nope").is_err());
+    }
+
+    // ── Helper tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_copy_dir_all() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), "hello").unwrap();
+        fs::write(src.join("sub").join("b.txt"), "world").unwrap();
+
+        copy_dir_all(&src, &dst).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
+            "world"
+        );
     }
 }
