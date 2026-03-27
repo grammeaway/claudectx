@@ -6,6 +6,9 @@ use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 // ── CLI definition ──────────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -98,6 +101,12 @@ impl Store {
         let root = home.join(".claudectx");
         fs::create_dir_all(root.join("contexts"))
             .context("Cannot create ~/.claudectx/contexts/")?;
+        #[cfg(unix)]
+        {
+            // Store contains copies of claude.json which holds OAuth tokens
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .context("Cannot set permissions on ~/.claudectx/")?;
+        }
         Ok(Self { root })
     }
 
@@ -187,6 +196,9 @@ fn cmd_save(store: &Store, name: &str) -> Result<()> {
     if claude_json.exists() {
         let dest = ctx_dir.join("claude.json");
         fs::copy(&claude_json, &dest).context("Cannot copy ~/.claude.json")?;
+        #[cfg(unix)]
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o600))
+            .context("Cannot set permissions on saved claude.json")?;
         saved.push("~/.claude.json");
     }
 
@@ -237,6 +249,9 @@ fn cmd_use(store: &Store, name: &str) -> Result<()> {
             fs::copy(&claude_json_dest, &backup).ok();
         }
         fs::copy(&saved_claude, &claude_json_dest).context("Cannot restore ~/.claude.json")?;
+        #[cfg(unix)]
+        fs::set_permissions(&claude_json_dest, fs::Permissions::from_mode(0o600))
+            .context("Cannot set permissions on ~/.claude.json")?;
         restored.push("~/.claude.json");
     }
 
@@ -386,6 +401,14 @@ fn cmd_copy(store: &Store, source: &str, dest: &str) -> Result<()> {
     }
     copy_dir_all(store.ctx_dir(source), store.ctx_dir(dest))
         .context("Cannot copy context directory")?;
+    #[cfg(unix)]
+    {
+        let claude_json = store.ctx_dir(dest).join("claude.json");
+        if claude_json.exists() {
+            fs::set_permissions(&claude_json, fs::Permissions::from_mode(0o600))
+                .context("Cannot set permissions on copied claude.json")?;
+        }
+    }
     println!(
         "{} Copied {} → {}",
         "✓".green().bold(),
